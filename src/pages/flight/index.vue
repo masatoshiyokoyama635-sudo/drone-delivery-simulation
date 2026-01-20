@@ -291,6 +291,9 @@ import { DroneModel, FlightPhysics, InputController, CollisionSystem, TrafficSys
 import { fetchBuildingsFromOSM, buildingsToMesh, createGround, fetchRoadsFromOSM, roadsToMesh, TIANYI_CENTER } from '@/utils/osmLoader'
 declare const uni: any
 
+// 场景参数
+const currentSceneType = ref<'city' | 'mountain' | 'emergency'>('city')
+
 // 城市模型加载器
 const gltfLoader = new GLTFLoader()
 
@@ -332,6 +335,9 @@ const distToDestination = ref(0)  // 到目的地距离
 const remainingTime = ref(0)      // 剩余时间
 const missionProgress = ref(0)    // 任务进度百分比
 let destinationMarker: THREE.Group | null = null
+
+// 山区模型尺寸（用于计算任务目的地）
+const mountainModelSize = reactive({ x: 0, y: 0, z: 0 })
 
 // 教程系统状态
 const tutorialActive = ref(false)
@@ -433,6 +439,31 @@ let frontCamera: THREE.PerspectiveCamera, downCamera: THREE.PerspectiveCamera
 let frontRenderer: THREE.WebGLRenderer, downRenderer: THREE.WebGLRenderer
 
 onMounted(() => {
+  // 解析URL参数获取场景类型 (兼容 hash 模式路由)
+  // uni-app H5 hash模式 URL格式: http://localhost:3000/#/pages/flight/index?scene=mountain
+  let sceneParam: string | null = null
+  
+  // 方法1: 从 hash 部分解析参数
+  const hash = window.location.hash  // e.g. "#/pages/flight/index?scene=mountain"
+  const hashQueryIndex = hash.indexOf('?')
+  if (hashQueryIndex !== -1) {
+    const hashParams = new URLSearchParams(hash.slice(hashQueryIndex + 1))
+    sceneParam = hashParams.get('scene')
+  }
+  
+  // 方法2: 备用 - 从普通 search 解析
+  if (!sceneParam) {
+    const urlParams = new URLSearchParams(window.location.search)
+    sceneParam = urlParams.get('scene')
+  }
+  
+  console.log('Parsed scene parameter:', sceneParam)
+  
+  if (sceneParam && ['city', 'mountain', 'emergency'].includes(sceneParam)) {
+    currentSceneType.value = sceneParam as 'city' | 'mountain' | 'emergency'
+  }
+  console.log('Current scene type:', currentSceneType.value)
+  
   // 初始化引擎模块
   inputController = new InputController()
   inputController.setScreenWidth(window.innerWidth)
@@ -441,7 +472,7 @@ onMounted(() => {
     maxThrust: 60,       // 推力
     dragCoefficient: 0.5, // 增加阻力使减速更明显
     maxSpeed: 20,        // 最大速度
-    maxAltitude: 250,    // 最大高度
+    maxAltitude: currentSceneType.value === 'mountain' ? 400 : 250,    // 山区高度更高
     rotationSpeed: 2.5,  // 旋转速度
     tiltAngle: 0.4,      // 倾斜角度
     gravity: 9.8         // 重力
@@ -542,8 +573,21 @@ function initThreeJS() {
   
   // 相机
   camera = new THREE.PerspectiveCamera(60, width / height, 0.1, 2000)
-  camera.position.set(0, 80, 120)
-  camera.lookAt(0, 30, 0)
+  // 山区场景：视角朝向北偏东40度（相机从西南方向看向无人机）
+  if (currentSceneType.value === 'mountain') {
+    // 视角朝向北偏东40度 = 相机在西南偏南40度位置
+    const cameraDistance = 130
+    const angleRad = (180 + 40) * Math.PI / 180  // 220度
+    camera.position.set(
+      cameraDistance * Math.sin(angleRad),   // x ≈ -83
+      100,
+      cameraDistance * Math.cos(angleRad)    // z ≈ -100
+    )
+    camera.lookAt(0, 30, 0)
+  } else {
+    camera.position.set(0, 80, 120)
+    camera.lookAt(0, 30, 0)
+  }
   
   // 渲染器
   renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
@@ -600,82 +644,179 @@ function initThreeJS() {
   setupCameras()
 }
 
-// 加载城市模型（优先使用预制GLB模型，否则用OSM数据）
+// 加载场景模型（根据场景类型加载不同模型）
 async function loadRealBuildings() {
-  console.log('Loading city model...')
+  console.log(`Loading scene model for: ${currentSceneType.value}`)
   
-  // 尝试加载预制的 GLB 城市模型
+  // 根据场景类型选择模型
+  const modelConfig = {
+    city: {
+      path: '/models/full_gameready_city_buildings.glb',
+      scale: 1,
+      position: { x: 0, y: 0, z: 0 },
+      enableTraffic: true,
+      enableCollision: true
+    },
+    mountain: {
+      path: '/models/mountain_peak.glb',
+      scale: 150,  // 8K山区模型放大到填满视野
+      position: { x: 0, y: 0, z: 0 },
+      enableTraffic: false,
+      enableCollision: true
+    },
+    emergency: {
+      path: '/models/full_gameready_city_buildings.glb',  // 紧急场景复用城市模型
+      scale: 1,
+      position: { x: 0, y: 0, z: 0 },
+      enableTraffic: true,
+      enableCollision: true
+    }
+  }
+  
+  const config = modelConfig[currentSceneType.value]
+  
   try {
     const gltf = await new Promise<any>((resolve, reject) => {
       gltfLoader.load(
-        '/models/full_gameready_city_buildings.glb',
+        config.path,
         resolve,
         (progress) => console.log('Loading progress:', (progress.loaded / progress.total * 100).toFixed(1) + '%'),
         reject
       )
     })
     
-    const cityModel = gltf.scene
+    const model = gltf.scene
     
-    // 调整模型比例和位置
-    cityModel.scale.set(1, 1, 1)  // 根据需要调整比例
-    cityModel.position.set(0, 0, 0)
+    // 计算模型包围盒，用于调试和自动调整
+    const box = new THREE.Box3().setFromObject(model)
+    const size = box.getSize(new THREE.Vector3())
+    const center = box.getCenter(new THREE.Vector3())
+    console.log('Model bounding box size:', size)
+    console.log('Model bounding box center:', center)
+    
+    // 调整模型比例
+    model.scale.set(config.scale, config.scale, config.scale)
+    
+    // 对于山区模型，将模型定位使无人机在左下角起飞
+    if (currentSceneType.value === 'mountain') {
+      // 重新计算缩放后的包围盒
+      const scaledBox = new THREE.Box3().setFromObject(model)
+      const scaledSize = scaledBox.getSize(new THREE.Vector3())
+      console.log('Scaled model size:', scaledSize)
+      
+      // 将模型移动，使其左下角在原点附近（无人机起飞点）
+      // 模型的 min.x, min.z 移到原点，底部在 y=0
+      model.position.set(
+        -scaledBox.min.x,      // 左边界对齐到 x=0
+        -scaledBox.min.y,      // 底部对齐到 y=0
+        -scaledBox.min.z       // 前边界对齐到 z=0
+      )
+      
+      // 保存模型尺寸用于设置任务目的地
+      mountainModelSize.x = scaledSize.x
+      mountainModelSize.y = scaledSize.y
+      mountainModelSize.z = scaledSize.z
+      console.log('Mountain model positioned at origin (bottom-left), size:', scaledSize)
+    } else {
+      model.position.set(config.position.x, config.position.y, config.position.z)
+    }
     
     // 为模型添加阴影
-    cityModel.traverse((child: any) => {
+    model.traverse((child: any) => {
       if (child.isMesh) {
         child.castShadow = true
         child.receiveShadow = true
       }
     })
     
-    scene.add(cityModel)
-    console.log('Loaded GLB city model successfully!')
+    scene.add(model)
+    console.log(`Loaded ${currentSceneType.value} model successfully!`)
     
-    // 注册城市模型到碰撞检测系统
-    collisionSystem.collectFromGLBModel(cityModel)
+    // 注册模型到碰撞检测系统
+    if (config.enableCollision) {
+      collisionSystem.collectFromGLBModel(model)
+    }
     
-    // 启动交通系统
-    trafficSystem.setScene(scene)
-    trafficSystem.spawnVehicles(15)
-    
-    // 注册车辆到碰撞系统
-    collisionSystem.registerVehicles(trafficSystem.getVehicles())
+    // 启动交通系统（仅城市场景）
+    if (config.enableTraffic) {
+      trafficSystem.setScene(scene)
+      trafficSystem.spawnVehicles(15)
+      collisionSystem.registerVehicles(trafficSystem.getVehicles())
+    }
     
     return
   } catch (error) {
     console.warn('Failed to load GLB model, falling back to OSM:', error)
   }
   
-  // 如果 GLB 加载失败，使用 OSM 数据作为备用
-  const osmConfig = {
-    centerLat: TIANYI_CENTER.lat,
-    centerLng: TIANYI_CENTER.lng,
-    radius: 600,
-    defaultHeight: 20,
-    levelHeight: 3.5
+  // 如果 GLB 加载失败，使用 OSM 数据作为备用（仅城市场景）
+  if (currentSceneType.value === 'city' || currentSceneType.value === 'emergency') {
+    const osmConfig = {
+      centerLat: TIANYI_CENTER.lat,
+      centerLng: TIANYI_CENTER.lng,
+      radius: 600,
+      defaultHeight: 20,
+      levelHeight: 3.5
+    }
+    
+    try {
+      const [buildings, roads] = await Promise.all([
+        fetchBuildingsFromOSM(osmConfig),
+        fetchRoadsFromOSM(osmConfig)
+      ])
+      
+      if (buildings && buildings.length > 0) {
+        const buildingGroup = buildingsToMesh(buildings, osmConfig)
+        scene.add(buildingGroup)
+        console.log(`Loaded ${buildings.length} buildings from OSM`)
+      }
+      
+      if (roads && roads.length > 0) {
+        const roadGroup = roadsToMesh(roads, osmConfig)
+        scene.add(roadGroup)
+        console.log(`Loaded ${roads.length} roads from OSM`)
+      }
+    } catch (error) {
+      console.error('OSM loading also failed:', error)
+    }
+  } else if (currentSceneType.value === 'mountain') {
+    // 山区备用方案：生成程序化山地
+    createProceduralMountainTerrain()
   }
+}
+
+// 程序化山地地形（作为山区模型加载失败时的备用）
+function createProceduralMountainTerrain() {
+  const geometry = new THREE.PlaneGeometry(2000, 2000, 100, 100)
+  geometry.rotateX(-Math.PI / 2)
   
-  try {
-    const [buildings, roads] = await Promise.all([
-      fetchBuildingsFromOSM(osmConfig),
-      fetchRoadsFromOSM(osmConfig)
-    ])
+  const positions = geometry.attributes.position
+  for (let i = 0; i < positions.count; i++) {
+    const x = positions.getX(i)
+    const z = positions.getZ(i)
     
-    if (buildings && buildings.length > 0) {
-      const buildingGroup = buildingsToMesh(buildings, osmConfig)
-      scene.add(buildingGroup)
-      console.log(`Loaded ${buildings.length} buildings from OSM`)
-    }
+    // 创建多层噪声模拟山地
+    const noise1 = Math.sin(x * 0.008) * Math.cos(z * 0.008) * 80
+    const noise2 = Math.sin(x * 0.02) * Math.cos(z * 0.025) * 30
+    const noise3 = Math.sin(x * 0.05) * Math.cos(z * 0.04) * 10
+    const height = noise1 + noise2 + noise3
     
-    if (roads && roads.length > 0) {
-      const roadGroup = roadsToMesh(roads, osmConfig)
-      scene.add(roadGroup)
-      console.log(`Loaded ${roads.length} roads from OSM`)
-    }
-  } catch (error) {
-    console.error('OSM loading also failed:', error)
+    positions.setY(i, height)
   }
+  geometry.computeVertexNormals()
+  
+  const material = new THREE.MeshStandardMaterial({
+    color: 0x4a6741,
+    roughness: 0.9,
+    metalness: 0.0
+  })
+  
+  const terrain = new THREE.Mesh(geometry, material)
+  terrain.receiveShadow = true
+  terrain.castShadow = true
+  scene.add(terrain)
+  
+  console.log('Created procedural mountain terrain')
 }
 
 function setupCameras() {
@@ -923,6 +1064,9 @@ function createTrees() {
 }
 
 function createLandingPad() {
+  // 山区场景：提高停机坪高度避免穿模
+  const padHeightOffset = currentSceneType.value === 'mountain' ? 15 : 0
+  
   // 停机坪基座 (缩小约3倍，与城市模型比例协调)
   const baseGeo = new THREE.CylinderGeometry(5, 5.5, 0.3, 32)
   const baseMat = new THREE.MeshStandardMaterial({ 
@@ -931,7 +1075,7 @@ function createLandingPad() {
     metalness: 0.2
   })
   const base = new THREE.Mesh(baseGeo, baseMat)
-  base.position.y = 0.15
+  base.position.y = 0.15 + padHeightOffset
   base.receiveShadow = true
   base.castShadow = true
   scene.add(base)
@@ -944,7 +1088,7 @@ function createLandingPad() {
     metalness: 0.3
   })
   const pad = new THREE.Mesh(padGeo, padMat)
-  pad.position.y = 0.38
+  pad.position.y = 0.38 + padHeightOffset
   pad.receiveShadow = true
   scene.add(pad)
   
@@ -977,7 +1121,11 @@ function createLandingPad() {
   })
   const hMark = new THREE.Mesh(hGeo, hMat)
   hMark.rotation.x = -Math.PI / 2
-  hMark.position.y = 0.47
+  // 山区场景：H标记朝向北偏东40度
+  if (currentSceneType.value === 'mountain') {
+    hMark.rotation.z = -0.7  // 绕Z轴旋转（因为平面已绕X轴旋转）
+  }
+  hMark.position.y = 0.47 + padHeightOffset
   scene.add(hMark)
   
   // 灯光标记
@@ -991,7 +1139,7 @@ function createLandingPad() {
     const light = new THREE.Mesh(lightGeo, lightMat)
     light.position.set(
       Math.cos(angle) * 3.8,
-      0.5,
+      0.5 + padHeightOffset,
       Math.sin(angle) * 3.8
     )
     scene.add(light)
@@ -999,14 +1147,21 @@ function createLandingPad() {
 }
 
 function createDrone() {
+  // 山区场景：提高无人机起始高度
+  const droneHeightOffset = currentSceneType.value === 'mountain' ? 15 : 0
+  // 山区场景：无人机朝向北偏东40度
+  const droneRotation = currentSceneType.value === 'mountain' ? 0.7 : 0
+  
   // 使用 DroneModel 引擎模块创建无人机（缩小以适应城市模型比例）
   droneModel = new DroneModel({ scale: 0.5 })
   drone = droneModel.getObject3D()
-  drone.position.set(0, 1, 0)
+  drone.position.set(0, 1 + droneHeightOffset, 0)
+  drone.rotation.y = droneRotation
   scene.add(drone)
   
-  // 初始化物理引擎位置
-  flightPhysics.setPosition(0, 1, 0)
+  // 初始化物理引擎位置和朝向
+  flightPhysics.setPosition(0, 1 + droneHeightOffset, 0)
+  flightPhysics.setRotation(0, droneRotation, 0)
 }
 
 function createBuildings() {
@@ -1502,14 +1657,31 @@ function startDefaultMission() {
     currentMission.value = tasks[0]
     remainingTime.value = tasks[0].timeLimit || 300
     
-    // 计算初始距离并创建目的地标记
-    const dest = tasks[0].destination
+    // 根据场景类型设置目的地
+    let dest = tasks[0].destination
+    
+    // 山区场景：目的地设在模型右上角（稍后在模型加载后更新）
+    if (currentSceneType.value === 'mountain') {
+      // 初始目的地，会在模型加载后更新
+      dest = { x: 200, y: 30, z: 200 }
+    }
+    
+    // 计算初始距离
     distToDestination.value = Math.sqrt(dest.x * dest.x + dest.z * dest.z)
     
     // 延迟创建目的地标记（等待场景初始化完成）
     setTimeout(() => {
+      // 山区场景：根据实际模型尺寸更新目的地位置
+      if (currentSceneType.value === 'mountain' && mountainModelSize.x > 0) {
+        dest = {
+          x: mountainModelSize.x * 0.8,  // 右侧 80% 位置
+          y: 30,                          // 固定高度
+          z: mountainModelSize.z * 0.8   // 上方 80% 位置
+        }
+        console.log('Mountain mission destination set to:', dest)
+      }
       createDestinationMarker(dest)
-    }, 1000)
+    }, 2000)  // 延迟更长时间等模型加载完成
   }
 }
 
