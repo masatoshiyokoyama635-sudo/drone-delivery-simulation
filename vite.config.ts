@@ -4,6 +4,7 @@ import { fileURLToPath, URL } from 'node:url'
 
 export default defineConfig({
     plugins: [vue()],
+    base: './', // 添加这行：使用相对路径
     resolve: {
         alias: {
             '@': fileURLToPath(new URL('./src', import.meta.url))
