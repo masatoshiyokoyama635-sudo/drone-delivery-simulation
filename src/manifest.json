@@ -1,0 +1,48 @@
+{
+    "name": "无人机配送仿真",
+    "appid": "__UNI__DRONE_SIM",
+    "description": "无人机配送操作仿真培训系统",
+    "versionName": "1.0.0",
+    "versionCode": "100",
+    "transformPx": false,
+    "app-plus": {
+        "usingComponents": true,
+        "nvueStyleCompiler": "uni-app",
+        "compilerVersion": 3,
+        "splashscreen": {
+            "alwaysShowBeforeRender": true,
+            "waiting": true,
+            "autoclose": true,
+            "delay": 0
+        },
+        "modules": {},
+        "distribute": {
+            "android": {
+                "permissions": [
+                    "<uses-permission android:name=\"android.permission.INTERNET\"/>",
+                    "<uses-permission android:name=\"android.permission.ACCESS_NETWORK_STATE\"/>",
+                    "<uses-permission android:name=\"android.permission.BLUETOOTH\"/>",
+                    "<uses-permission android:name=\"android.permission.BLUETOOTH_ADMIN\"/>"
+                ]
+            },
+            "ios": {}
+        }
+    },
+    "quickapp": {},
+    "mp-weixin": {
+        "appid": "",
+        "setting": {
+            "urlCheck": false,
+            "es6": true,
+            "minified": true
+        },
+        "usingComponents": true,
+        "lazyCodeLoading": "requiredComponents"
+    },
+    "h5": {
+        "title": "无人机配送仿真",
+        "router": {
+            "mode": "hash"
+        }
+    }
+}
