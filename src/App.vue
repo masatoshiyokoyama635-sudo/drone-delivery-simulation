@@ -3,7 +3,7 @@
 </template>
 
 <script setup lang="ts">
-import './uni-compat'
+// uni-compat已在main.ts中导入
 </script>
 
 <style>
