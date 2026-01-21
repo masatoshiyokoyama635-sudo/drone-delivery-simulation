@@ -100,6 +100,7 @@ const isUnlocked = ref(false)
 const altitude = ref(0)
 const speed = ref(0)
 const heading = ref(0)
+const dronePosition = reactive({ x: 0, y: 0, z: 0 })  // 无人机位置
 
 // 教程状态
 const tutorialId = ref('')
@@ -135,9 +136,26 @@ let flightPhysics: FlightPhysics
 let tutorialManager: TutorialManager
 
 onMounted(() => {
-  // 获取教程ID
-  const urlParams = new URLSearchParams(window.location.search)
-  tutorialId.value = urlParams.get('tutorial') || 'tut_unlock'
+  // 获取教程ID (兼容 hash 路由模式)
+  // URL格式: http://localhost:3000/#/pages/training-flight/index?tutorial=tut_altitude
+  let tutorialParam = 'tut_unlock'  // 默认值
+  
+  // 方法1: 从 hash 部分解析参数
+  const hash = window.location.hash  // e.g. "#/pages/training-flight/index?tutorial=tut_altitude"
+  const hashQueryIndex = hash.indexOf('?')
+  if (hashQueryIndex !== -1) {
+    const hashParams = new URLSearchParams(hash.slice(hashQueryIndex + 1))
+    tutorialParam = hashParams.get('tutorial') || tutorialParam
+  }
+  
+  // 方法2: 备用 - 从普通 search 解析
+  if (tutorialParam === 'tut_unlock') {
+    const urlParams = new URLSearchParams(window.location.search)
+    tutorialParam = urlParams.get('tutorial') || tutorialParam
+  }
+  
+  console.log('Parsed tutorial ID:', tutorialParam)
+  tutorialId.value = tutorialParam
   
   // 初始化物理引擎
   flightPhysics = new FlightPhysics({
@@ -303,10 +321,10 @@ function createLandingPad(x: number, z: number) {
 function createHeightMarkers() {
   const heights = [10, 20, 30, 50, 80]
   const positions = [
-    { x: 30, z: 0 },
-    { x: -30, z: 0 },
-    { x: 0, z: 30 },
-    { x: 0, z: -30 }
+    { x: 20, z: 0 },
+    { x: -20, z: 0 },
+    { x: 0, z: 20 },
+    { x: 0, z: -20 }
   ]
   
   positions.forEach((pos, i) => {
@@ -419,6 +437,9 @@ function startAnimation() {
       altitude.value = state.altitude
       speed.value = state.speed
       heading.value = state.heading * 180 / Math.PI
+      dronePosition.x = state.position.x
+      dronePosition.y = state.position.y
+      dronePosition.z = state.position.z
       
       // 检测教程条件
       checkTutorialCondition()
@@ -444,9 +465,20 @@ function checkTutorialCondition() {
   
   const step = currentStep.value
   
-  // 检测 reach 类型
+  // 检测 reach 类型 - 高度目标
   if (step.action === 'reach' && step.targetValue?.altitude !== undefined) {
     if (Math.abs(altitude.value - step.targetValue.altitude) < 3) {
+      nextStep()
+    }
+  }
+  
+  // 检测 reach 类型 - 位置目标（用于移动控制教程）
+  if (step.action === 'reach' && step.position) {
+    const dx = dronePosition.x - step.position.x
+    const dy = dronePosition.y - step.position.y
+    const dz = dronePosition.z - step.position.z
+    const distance = Math.sqrt(dx * dx + dy * dy + dz * dz)
+    if (distance < 10) {  // 10米内算到达
       nextStep()
     }
   }

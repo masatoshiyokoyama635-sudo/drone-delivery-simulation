@@ -132,11 +132,11 @@ export const TUTORIALS: Tutorial[] = [
             },
             {
                 id: 'step_2',
-                title: '向前飞行',
-                description: '尝试向前飞行',
-                instruction: '保持向前推动，飞行一小段距离',
+                title: '飞向目标点1',
+                description: '飞向前方的青色目标圈',
+                instruction: '保持向前推动，飞向目标点1（右前方青色圆圈）',
                 action: 'reach',
-                position: { x: 0, y: 50, z: 30 }
+                position: { x: 20, y: 20, z: 20 }  // 对应场景中的目标点1
             },
             {
                 id: 'step_3',

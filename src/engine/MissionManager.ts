@@ -97,9 +97,9 @@ export const PRESET_TASKS: DeliveryTask[] = [
         difficulty: 3,
         cargo: { type: 'medicine', name: '急救药品', weight: 1, fragile: true },
         start: { x: 0, y: 0, z: 0 },
-        destination: { x: 300, y: 0, z: 200 },
+        destination: { x: 0, y: 0, z: 320 },  // 医院位置
         timeLimit: 180,
-        requirements: { maxSpeed: 15, minAltitude: 40 }
+        requirements: { maxSpeed: 15, minAltitude: 30 }
     },
     {
         id: 'task_mountain',

@@ -584,6 +584,10 @@ function initThreeJS() {
       cameraDistance * Math.cos(angleRad)    // z ≈ -100
     )
     camera.lookAt(0, 30, 0)
+  } else if (currentSceneType.value === 'emergency') {
+    // 紧急场景：更高的初始视角以看到远处的医院
+    camera.position.set(0, 120, 150)
+    camera.lookAt(0, 30, 100)
   } else {
     camera.position.set(0, 80, 120)
     camera.lookAt(0, 30, 0)
@@ -627,12 +631,16 @@ function initThreeJS() {
   fillLight.position.set(-100, 80, -100)
   scene.add(fillLight)
   
-  // 地面 (使用 OSM 加载器的地面)
-  const ground = createGround(2000)
-  scene.add(ground)
+  // 地面 (紧急场景在 createEmergencyScene 中单独创建)
+  if (currentSceneType.value !== 'emergency') {
+    const ground = createGround(2000)
+    scene.add(ground)
+  }
   
-  // 起降平台
-  createLandingPad()
+  // 起降平台 (紧急场景在 createEmergencyScene 中创建)
+  if (currentSceneType.value !== 'emergency') {
+    createLandingPad()
+  }
   
   // 无人机
   createDrone()
@@ -665,15 +673,22 @@ async function loadRealBuildings() {
       enableCollision: true
     },
     emergency: {
-      path: '/models/full_gameready_city_buildings.glb',  // 紧急场景复用城市模型
+      path: '',  // 紧急场景使用程序化训练场地 + 医院模型
       scale: 1,
       position: { x: 0, y: 0, z: 0 },
-      enableTraffic: true,
-      enableCollision: true
+      enableTraffic: false,
+      enableCollision: false,
+      useCustomScene: true  // 标记使用自定义场景
     }
   }
   
   const config = modelConfig[currentSceneType.value]
+  
+  // 紧急场景使用自定义训练场地+医院
+  if (currentSceneType.value === 'emergency') {
+    await createEmergencyScene()
+    return
+  }
   
   try {
     const gltf = await new Promise<any>((resolve, reject) => {
@@ -750,7 +765,7 @@ async function loadRealBuildings() {
   }
   
   // 如果 GLB 加载失败，使用 OSM 数据作为备用（仅城市场景）
-  if (currentSceneType.value === 'city' || currentSceneType.value === 'emergency') {
+  if (currentSceneType.value === 'city') {
     const osmConfig = {
       centerLat: TIANYI_CENTER.lat,
       centerLng: TIANYI_CENTER.lng,
@@ -817,6 +832,205 @@ function createProceduralMountainTerrain() {
   scene.add(terrain)
   
   console.log('Created procedural mountain terrain')
+}
+
+// 紧急场景：训练场地 + 医院模型
+async function createEmergencyScene() {
+  console.log('Creating emergency scene: training ground + hospital')
+  
+  // 1. 创建训练场地地面 (800x800m 覆盖医院区域)
+  const groundGeo = new THREE.PlaneGeometry(800, 800)
+  groundGeo.rotateX(-Math.PI / 2)
+  
+  // 草地纹理
+  const grassCanvas = document.createElement('canvas')
+  grassCanvas.width = 512
+  grassCanvas.height = 512
+  const grassCtx = grassCanvas.getContext('2d')!
+  
+  const gradient = grassCtx.createRadialGradient(256, 256, 0, 256, 256, 400)
+  gradient.addColorStop(0, '#4a7c3f')
+  gradient.addColorStop(0.5, '#3d6b35')
+  gradient.addColorStop(1, '#2d5a28')
+  grassCtx.fillStyle = gradient
+  grassCtx.fillRect(0, 0, 512, 512)
+  
+  // 添加草地噪点纹理
+  for (let i = 0; i < 5000; i++) {
+    const x = Math.random() * 512
+    const y = Math.random() * 512
+    grassCtx.fillStyle = Math.random() > 0.5 ? '#5a8c4f' : '#2a5020'
+    grassCtx.fillRect(x, y, 2 + Math.random() * 2, 1 + Math.random() * 2)
+  }
+  
+  const grassTexture = new THREE.CanvasTexture(grassCanvas)
+  grassTexture.wrapS = THREE.RepeatWrapping
+  grassTexture.wrapT = THREE.RepeatWrapping
+  grassTexture.repeat.set(20, 20)
+  
+  const groundMat = new THREE.MeshStandardMaterial({
+    map: grassTexture,
+    roughness: 0.9,
+    metalness: 0.0
+  })
+  
+  const ground = new THREE.Mesh(groundGeo, groundMat)
+  ground.position.y = -0.1
+  ground.receiveShadow = true
+  scene.add(ground)
+  
+  // 2. 添加网格辅助线
+  const gridHelper = new THREE.GridHelper(800, 80, 0x888888, 0xaaaaaa)
+  gridHelper.position.y = 0.05
+  scene.add(gridHelper)
+  
+  // 3. 创建跑道 (从起降台到医院方向)
+  const runwayGeo = new THREE.PlaneGeometry(20, 400)
+  runwayGeo.rotateX(-Math.PI / 2)
+  const runwayMat = new THREE.MeshStandardMaterial({
+    color: 0x444444,
+    roughness: 0.7,
+    metalness: 0.1
+  })
+  const runway = new THREE.Mesh(runwayGeo, runwayMat)
+  runway.position.set(0, 0.1, 180)  // 从起点延伸到远端
+  runway.receiveShadow = true
+  scene.add(runway)
+  
+  // 跑道标线
+  const lineMat = new THREE.MeshBasicMaterial({ color: 0xffffff })
+  for (let z = 0; z < 380; z += 20) {
+    const lineGeo = new THREE.PlaneGeometry(0.5, 10)
+    lineGeo.rotateX(-Math.PI / 2)
+    const line = new THREE.Mesh(lineGeo, lineMat)
+    line.position.set(0, 0.15, z)
+    scene.add(line)
+  }
+  
+  // 4. 加载医院模型
+  try {
+    const hospitalGltf = await new Promise<any>((resolve, reject) => {
+      gltfLoader.load(
+        '/models/hospital.glb',
+        resolve,
+        (progress) => console.log('Hospital loading:', (progress.loaded / progress.total * 100).toFixed(1) + '%'),
+        reject
+      )
+    })
+    
+    const hospital = hospitalGltf.scene
+    
+    // 计算模型尺寸并调整
+    const box = new THREE.Box3().setFromObject(hospital)
+    const size = box.getSize(new THREE.Vector3())
+    console.log('Hospital model size:', size)
+    
+    // 放大医院模型使其更明显
+    const targetScale = 15  // 放大到合适尺寸
+    hospital.scale.setScalar(targetScale)
+    
+    // 放置在远端 (z=320, 距离起点约300m)
+    hospital.position.set(0, 0, 320)
+    
+    // 旋转模型使大门朝向无人机（即朝向负 Z 方向）
+    hospital.rotation.y = Math.PI  // 旋转180度
+    
+    // 添加阴影
+    hospital.traverse((child: any) => {
+      if (child.isMesh) {
+        child.castShadow = true
+        child.receiveShadow = true
+      }
+    })
+    
+    scene.add(hospital)
+    console.log('Hospital model loaded and positioned at z=320')
+    
+    // 5. 创建医院上方的目的地光柱标记
+    createHospitalMarker(0, 320)
+    
+  } catch (error) {
+    console.error('Failed to load hospital model:', error)
+    // 备用方案：创建简单的医院立方体表示
+    createSimpleHospital(0, 320)
+  }
+  
+  console.log('Emergency scene created successfully')
+}
+
+// 创建医院目的地标记（绿色光柱）
+function createHospitalMarker(x: number, z: number) {
+  const markerGroup = new THREE.Group()
+  
+  // 光柱
+  const pillarGeo = new THREE.CylinderGeometry(8, 8, 150, 16, 1, true)
+  const pillarMat = new THREE.MeshBasicMaterial({
+    color: 0x00ff88,
+    transparent: true,
+    opacity: 0.15,
+    side: THREE.DoubleSide
+  })
+  const pillar = new THREE.Mesh(pillarGeo, pillarMat)
+  pillar.position.y = 75
+  markerGroup.add(pillar)
+  
+  // 底部光环
+  const ringGeo = new THREE.RingGeometry(6, 10, 32)
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: 0x00ff88,
+    transparent: true,
+    opacity: 0.6,
+    side: THREE.DoubleSide
+  })
+  const ring = new THREE.Mesh(ringGeo, ringMat)
+  ring.rotation.x = -Math.PI / 2
+  ring.position.y = 3  // 抬高以避免与地面Z-fighting
+  markerGroup.add(ring)
+  
+  // 红十字标记 (医院标识)
+  const crossGroup = new THREE.Group()
+  const crossMat = new THREE.MeshBasicMaterial({ color: 0xff3333 })
+  
+  const crossH = new THREE.Mesh(new THREE.BoxGeometry(8, 2, 2), crossMat)
+  const crossV = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 8), crossMat)
+  crossGroup.add(crossH, crossV)
+  crossGroup.position.y = 50
+  crossGroup.rotation.x = -Math.PI / 2
+  markerGroup.add(crossGroup)
+  
+  markerGroup.position.set(x, 0, z)
+  scene.add(markerGroup)
+  
+  // 保存为目的地标记 (复用已有变量)
+  destinationMarker = markerGroup
+}
+
+// 备用简单医院模型
+function createSimpleHospital(x: number, z: number) {
+  const hospitalGroup = new THREE.Group()
+  
+  // 主建筑
+  const buildingGeo = new THREE.BoxGeometry(30, 25, 20)
+  const buildingMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee })
+  const building = new THREE.Mesh(buildingGeo, buildingMat)
+  building.position.y = 12.5
+  building.castShadow = true
+  building.receiveShadow = true
+  hospitalGroup.add(building)
+  
+  // 红十字
+  const crossMat = new THREE.MeshBasicMaterial({ color: 0xff0000 })
+  const crossH = new THREE.Mesh(new THREE.BoxGeometry(8, 6, 0.5), crossMat)
+  const crossV = new THREE.Mesh(new THREE.BoxGeometry(2, 14, 0.5), crossMat)
+  crossH.position.set(0, 18, 10.3)
+  crossV.position.set(0, 18, 10.3)
+  hospitalGroup.add(crossH, crossV)
+  
+  hospitalGroup.position.set(x, 0, z)
+  scene.add(hospitalGroup)
+  
+  // 添加目的地标记
+  createHospitalMarker(x, z)
 }
 
 function setupCameras() {
@@ -1148,7 +1362,12 @@ function createLandingPad() {
 
 function createDrone() {
   // 山区场景：提高无人机起始高度
-  const droneHeightOffset = currentSceneType.value === 'mountain' ? 15 : 0
+  let droneHeightOffset = 0
+  if (currentSceneType.value === 'mountain') {
+    droneHeightOffset = 15
+  } else if (currentSceneType.value === 'emergency') {
+    droneHeightOffset = 50  // 紧急场景：更高起始高度以看到医院
+  }
   // 山区场景：无人机朝向北偏东40度
   const droneRotation = currentSceneType.value === 'mountain' ? 0.7 : 0
   
